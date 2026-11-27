@@ -1,0 +1,61 @@
+# Публичный снимок прематч-линии Pinnacle (футбол). Без секретов и ключей.
+# Сетка в стороне от :00/:15/:30/:45 — GitHub cron на этих минутах часто опаздывает.
+name: pinnacle-feed
+
+on:
+  schedule:
+    - cron: "3,18,33,48 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout collector (main)
+        uses: actions/checkout@v4
+        with:
+          path: src
+          sparse-checkout: |
+            collect.py
+          sparse-checkout-cone-mode: false
+
+      - name: Fetch previous feed data (if any)
+        continue-on-error: true
+        run: |
+          mkdir -p data
+          git clone --depth 1 --branch feed "https://github.com/${GITHUB_REPOSITORY}.git" prev || true
+          if [ -d prev ]; then
+            cp -f prev/closings.json prev/punctuality.json data/ 2>/dev/null || true
+          fi
+
+      - name: Collect Pinnacle snapshot
+        env:
+          TZ: UTC
+        run: |
+          IS_SCHED=""
+          if [ "${{ github.event_name }}" = "schedule" ]; then IS_SCHED=--schedule; fi
+          python3 src/collect.py --out data $IS_SCHED
+          ls -la data
+          python3 -c "import json,pathlib; p=pathlib.Path('data/latest.json'); print('latest', p.stat().st_size, json.loads(p.read_text()).get('n'))"
+
+      - name: Publish data branch (single commit, force)
+        run: |
+          mkdir -p publish
+          cp data/latest.json data/closings.json data/punctuality.json data/status.json data/index.html publish/
+          cd publish
+          git init
+          git checkout -b feed
+          git config user.name "gem-pinnacle-feed"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest.json closings.json punctuality.json status.json index.html
+          git commit -m "feed $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -f origin feed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
